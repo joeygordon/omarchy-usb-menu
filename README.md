@@ -16,16 +16,28 @@ Other versions haven't been checked, and hardware coverage is still limited.
 
 ## Requirements
 
-You'll need Omarchy's Quickshell shell and these system packages:
+This uses components already included with standard Omarchy. It's tested on
+**Omarchy 4.0.4**—no extra Python packages, pip installs, or virtual environment
+needed.
+
+<details>
+<summary>Technical dependencies for customized installs</summary>
+
+If you've trimmed or replaced parts of Omarchy, the plugin uses its Quickshell
+shell, built-in controls, and Nerd Font icons, plus these system packages:
 
 - Python at `/usr/bin/python` and `python-gobject` for Gio
 - `udisks2` for drive information and removal
 - `xdg-utils` for opening volumes in your file manager
 - `libnotify` for desktop notifications
 
-The menu uses Omarchy's built-in controls and Nerd Font icons. The installer
-doesn't install dependencies. Like other Omarchy plugins, it runs as your user
-inside the shell, so review the code before enabling it.
+The installer checks the plugin and sets it up; it doesn't install missing
+packages. On a customized system, those need to be available first.
+
+</details>
+
+Like other Omarchy plugins, it runs as your user inside the shell, so review the
+code before enabling it.
 
 ## Install
 
