@@ -88,22 +88,21 @@ class Tests(unittest.TestCase):
         bus = Change(self.o)
         with self.assertRaises(ValueError): h.eject(bus, D, self.token(), identity)
         self.assertEqual(bus.calls, [(P, 'Unmount')])
-    def test_open_malicious_mount_uses_uri_argv(self):
+    def test_open_malicious_mount_uses_encoded_uri(self):
+        from gi.repository import Gio
         path = '/run/media/testuser/$(touch NEVER); space <tag>'
         self.o[P][h.FS]['MountPoints'] = [list(path.encode() + b'\0')]
-        with patch.object(h, 'Bus', return_value=Fake(self.o)), patch.object(h.sys, 'argv', ['helper', 'open', D, '', P]), patch.object(h.subprocess, 'Popen') as spawn, patch.object(h, 'emit'):
-            spawn.return_value.wait.return_value = 0
+        with patch.object(h, 'Bus', return_value=Fake(self.o)), patch.object(h.sys, 'argv', ['helper', 'open', D, '', P]), patch.object(h, 'launch_file_manager') as launch, patch.object(h, 'emit'):
             self.assertEqual(h.main(), 0)
-            spawn.return_value.wait.assert_called_once_with(timeout=10)
-            argv = spawn.call_args.args[0]
-            self.assertEqual(argv[0], 'xdg-open')
-            self.assertTrue(argv[1].startswith('file:///run/media/testuser/'))
-            self.assertIn('%20', argv[1])
-            self.assertNotIn('shell', spawn.call_args.kwargs)
+            uri = launch.call_args.args[0]
+            self.assertTrue(uri.startswith('file:///run/media/testuser/'))
+            self.assertIn('%20', uri)
+            self.assertEqual(Gio.File.new_for_uri(uri).get_path(), path)
+            launch.assert_called_once_with(uri)
     def test_open_stale_volume_does_not_launch(self):
-        with patch.object(h, 'Bus', return_value=Fake({})), patch.object(h.sys, 'argv', ['helper', 'open', D, '', P]), patch.object(h.subprocess, 'Popen') as spawn, patch.object(h, 'emit'):
+        with patch.object(h, 'Bus', return_value=Fake({})), patch.object(h.sys, 'argv', ['helper', 'open', D, '', P]), patch.object(h, 'launch_file_manager') as launch, patch.object(h, 'emit'):
             self.assertEqual(h.main(), 1)
-            spawn.assert_not_called()
+            launch.assert_not_called()
     def test_topology_added(self):
         token = self.token()
         self.o[Q] = copy.deepcopy(self.o[P])
@@ -174,54 +173,91 @@ class Tests(unittest.TestCase):
                     with h.removal_lock(): pass
 
 class LauncherTests(unittest.TestCase):
-    def request(self, spawn):
+    def request(self, start, finish, timeout=0.03):
         from io import StringIO
+        from gi.repository import Gio
         import contextlib, json
         output = StringIO()
-        with patch.object(h, 'Bus', return_value=Fake(fixture())), patch.object(h.sys, 'argv', ['helper', 'open', D, '', P]), patch.object(h.subprocess, 'Popen', spawn), contextlib.redirect_stdout(output):
+        real_launch = h.launch_file_manager
+        with patch.object(h, 'Bus', return_value=Fake(fixture())), patch.object(h.sys, 'argv', ['helper', 'open', D, '', P]), patch.object(Gio.AppInfo, 'launch_default_for_uri_async', side_effect=start), patch.object(Gio.AppInfo, 'launch_default_for_uri_finish', finish), patch.object(h, 'launch_file_manager', side_effect=lambda uri: real_launch(uri, timeout)), patch('subprocess.Popen', side_effect=AssertionError('Must not wait on an application process')), contextlib.redirect_stdout(output):
             code = h.main()
         return code, json.loads(output.getvalue())
 
-    def test_launcher_success_waits_for_exit(self):
+    def schedule(self, callback):
+        from gi.repository import GLib
+        source = GLib.idle_source_new()
+        source.set_callback(lambda *_: (callback(), GLib.SOURCE_REMOVE)[1])
+        source.attach(GLib.MainContext.get_thread_default())
+
+    def test_launch_acceptance_does_not_wait_for_application_lifetime(self):
         from unittest.mock import Mock
-        spawn = Mock()
-        spawn.return_value.wait.return_value = 0
-        code, report = self.request(spawn)
-        spawn.return_value.wait.assert_called_once_with(timeout=10)
+        application = Mock(running=True)
+        finish = Mock(return_value=True)
+        def start(uri, context, cancel, callback, data):
+            self.assertTrue(uri.startswith('file:///'))
+            self.schedule(lambda: callback(None, application, data))
+        code, report = self.request(start, finish)
         self.assertEqual(code, 0)
         self.assertTrue(report['success'])
+        self.assertTrue(application.running)
+        application.wait.assert_not_called()
+        finish.assert_called_once_with(application)
 
-    def test_launcher_nonzero_exit_is_error(self):
+    def test_launch_errors_are_reported(self):
+        from gi.repository import GLib
         from unittest.mock import Mock
-        for status in (1, 3, 4, -15):
-            spawn = Mock()
-            spawn.return_value.wait.return_value = status
-            code, report = self.request(spawn)
-            self.assertEqual(code, 1)
-            self.assertEqual(report['errorCode'], 'open_failed')
-            self.assertNotIn('success', report)
-            self.assertIn(str(status), report['details']['message'])
-
-    def test_launcher_spawn_failure_is_open_error(self):
-        from unittest.mock import Mock
-        for error in (FileNotFoundError('xdg-open missing'), PermissionError('denied')):
-            code, report = self.request(Mock(side_effect=error))
+        for finish in (Mock(return_value=False), Mock(side_effect=GLib.Error('Activation rejected'))):
+            def start(uri, context, cancel, callback, data):
+                self.schedule(lambda: callback(None, object(), data))
+            code, report = self.request(start, finish)
             self.assertEqual(code, 1)
             self.assertEqual(report['errorCode'], 'open_failed')
             self.assertNotIn('success', report)
 
-    def test_launcher_timeout_is_bounded_without_killing_file_manager(self):
+    def test_start_failure_is_reported(self):
         from unittest.mock import Mock
-        spawn = Mock()
-        spawn.return_value.wait.side_effect = h.subprocess.TimeoutExpired('xdg-open', 10)
-        code, report = self.request(spawn)
+        for error in (FileNotFoundError('No handler'), PermissionError('Denied')):
+            code, report = self.request(Mock(side_effect=error), Mock())
+            self.assertEqual(code, 1)
+            self.assertEqual(report['errorCode'], 'open_failed')
+            self.assertIn(str(error), report['details']['message'])
+
+    def test_timeout_cancels_request_and_ignores_late_success_or_error(self):
+        from gi.repository import Gio, GLib
+        from unittest.mock import Mock
+        saved = {}
+        def start(uri, context, cancel, callback, data):
+            saved.update(cancel=cancel, callback=callback)
+        finish = Mock(return_value=True)
+        code, report = self.request(start, finish)
         self.assertEqual(code, 1)
         self.assertEqual(report['errorCode'], 'open_timeout')
         self.assertIn('may still open', report['error'])
+        self.assertTrue(saved['cancel'].is_cancelled())
+        finish.assert_not_called()
+        for effect in (None, GLib.Error('Late failure')):
+            finish.side_effect = effect
+            with patch.object(Gio.AppInfo, 'launch_default_for_uri_finish', finish), patch.object(h, 'emit') as emit:
+                saved['callback'](None, object(), None)
+                emit.assert_not_called()
         self.assertNotIn('success', report)
-        spawn.return_value.wait.assert_called_once_with(timeout=10)
-        spawn.return_value.kill.assert_not_called()
-        spawn.return_value.terminate.assert_not_called()
+
+    def test_immediate_callback_does_not_hang_or_leave_timeout(self):
+        from unittest.mock import Mock
+        def start(uri, context, cancel, callback, data):
+            callback(None, object(), data)
+        code, report = self.request(start, Mock(return_value=True))
+        self.assertEqual(code, 0)
+        self.assertTrue(report['success'])
+
+    def test_completion_after_deadline_cannot_claim_success(self):
+        from unittest.mock import Mock
+        def start(uri, context, cancel, callback, data):
+            self.schedule(lambda: callback(None, object(), data))
+        with patch.object(h.time, 'monotonic', side_effect=[100, 111]):
+            code, report = self.request(start, Mock(return_value=True))
+        self.assertEqual(code, 1)
+        self.assertEqual(report['errorCode'], 'open_timeout')
 
 
 class MetadataTests(unittest.TestCase):

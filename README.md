@@ -43,7 +43,6 @@ shell, built-in controls, and Nerd Font icons, plus these system packages:
 
 - Python at `/usr/bin/python` and `python-gobject` for Gio
 - `udisks2` for drive information and removal
-- `xdg-utils` for opening volumes in your file manager
 - `libnotify` for desktop notifications
 
 The installer checks the plugin and sets it up; it doesn't install missing
@@ -92,7 +91,8 @@ Escape to close it.
   you can also focus the name and press Enter or Space. Each drive expands
   independently, and closing the menu collapses the details.
 - **Open** opens a mounted volume in your file manager. It stays quiet on success
-  and shows an error if the launcher fails. It doesn't mount unmounted volumes.
+  and shows an error if the desktop launch fails. It doesn't mount unmounted
+  volumes.
 - **Eject** removes the whole physical drive, including all its partitions. Close
   any files or terminal windows using the drive first.
 
@@ -164,10 +164,12 @@ omarchy-shell joey.usb-storage diagnostics
 The restart briefly reloads the desktop shell. `ping` should return `ok`, and this
 version's diagnostics should show `native-compact-v16-secondary-contrast`.
 
-**Open seems stuck:** After ten seconds, the plugin reports that it couldn't
-confirm the launch. It doesn't kill your file manager, which may still open.
-Check before trying again. A successful launcher exit also can't guarantee that
-a window is visible.
+**Open seems stuck:** The plugin uses Gio to ask your desktop to open the volume
+and waits for launch acceptance, not for the file manager to exit. If the desktop
+hasn't confirmed within ten seconds, the plugin stops waiting and reports that
+the result is uncertain. It doesn't kill your file manager, which may still open.
+Check before trying again. Launch acceptance doesn't guarantee that a window
+is visible.
 
 **Space or connection details unavailable:** Metadata is optional. Free-space
 reads run separately while the menu is open, with a two-second display deadline
@@ -210,7 +212,7 @@ ImageMagick (`magick`). These are test dependencies, not plugin requirements:
 omarchy plugin validate .
 ```
 
-There are 43 Python tests and seven QML suites. They use fake devices, launchers,
+There are 45 Python tests and seven QML suites. They use fake devices, launchers,
 and notifications; they never open or eject a real volume. Coverage includes
 multiple drives and partitions, busy and partial failures, changed devices,
 malicious labels, repeated clicks, delayed results, per-volume space, missing
@@ -223,8 +225,8 @@ about Wayland focus or window masks. They don't replace hands-on checks of
 hardware, keyboard and mouse behavior, or multi-monitor setups.
 
 `Widget.qml` handles bar integration and feedback, `UsbMenu.qml` draws the menu,
-and `usb_helper.py` talks to UDisks2. The helper uses argument arrays for launches
-and treats drive labels as text. The UI ignores stale replies and waits for both
+and `usb_helper.py` talks to UDisks2. The helper passes encoded file URIs directly
+to Gio for launches and treats drive labels as text. The UI ignores stale replies and waits for both
 a successful removal result and a refreshed device list before notifying.
 
 See the [Omarchy shell docs](https://github.com/omacom/omarchy/blob/v4.0.4/shell/README.md)

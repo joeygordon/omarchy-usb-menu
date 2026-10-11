@@ -6,7 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import subprocess
+import time
 import sys
 
 PREFIX = 'org.freedesktop.UDisks2.'
@@ -275,20 +275,57 @@ def removal_lock():
 
 
 def launch_file_manager(uri, timeout=10):
-    """Wait for the launcher, without killing an existing/file-manager process."""
+    """Wait for desktop launch acceptance, never for the application to exit."""
+    from gi.repository import Gio, GLib
+
+    context = GLib.MainContext.new()
+    loop = GLib.MainLoop.new(context, False)
+    cancellable = Gio.Cancellable.new()
+    deadline = time.monotonic() + timeout
+    state = {'done': False, 'error': None}
+
+    def finish(error=None):
+        if state['done']:
+            return
+        state.update(done=True, error=error)
+        loop.quit()
+
+    def expired(*_):
+        # Cancels our pending launch request, not the file manager. Activation
+        # may already have happened, so timeout must remain an uncertain result.
+        finish(SafetyError('open_timeout', 'Desktop launch confirmation exceeded the deadline.'))
+        cancellable.cancel()
+        return GLib.SOURCE_REMOVE
+
+    def launched(_source, result, *_):
+        try:
+            accepted = Gio.AppInfo.launch_default_for_uri_finish(result)
+            error = None if accepted else SafetyError('open_failed', 'The desktop declined the Open request.')
+        except Exception as exc:
+            error = SafetyError('open_failed', f'Desktop launch failed: {exc}')
+        if state['done']:
+            return  # Drain late completion without replacing an earlier result.
+        if time.monotonic() >= deadline:
+            expired()
+        else:
+            finish(error)
+
+    timer = GLib.timeout_source_new(max(1, int(timeout * 1000)))
+    timer.set_callback(expired)
+    context.push_thread_default()
     try:
-        process = subprocess.Popen(['xdg-open', uri], stdout=subprocess.DEVNULL,
-                                   stderr=subprocess.DEVNULL)
-    except OSError as exc:
-        raise SafetyError('open_failed', f'Could not start xdg-open: {exc}') from exc
-    try:
-        code = process.wait(timeout=timeout)
-    except subprocess.TimeoutExpired as exc:
-        # Some handlers stay attached to their window. Bound our wait but do not
-        # terminate a launcher that may have exec'd the actual file manager.
-        raise SafetyError('open_timeout', 'xdg-open did not finish within the launch deadline.') from exc
-    if code != 0:
-        raise SafetyError('open_failed', f'xdg-open exited with status {code}.')
+        timer.attach(context)
+        try:
+            Gio.AppInfo.launch_default_for_uri_async(uri, None, cancellable, launched, None)
+        except Exception as exc:
+            finish(SafetyError('open_failed', f'Could not request desktop launch: {exc}'))
+        if not state['done']:
+            loop.run()
+    finally:
+        timer.destroy()
+        context.pop_thread_default()
+    if state['error']:
+        raise state['error']
 
 
 def main():
@@ -317,7 +354,7 @@ def main():
                 raise SafetyError('stale', 'Volume is no longer mounted.')
             from gi.repository import Gio
             launch_file_manager(Gio.File.new_for_path(mounts(obj)[0]).get_uri())
-            emit(success=True, message='File manager accepted the Open request.')
+            emit(success=True, message='Desktop accepted the Open request.')
         else:
             raise ValueError('Unknown request.')
     except Exception as exc:
