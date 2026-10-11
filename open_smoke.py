@@ -71,6 +71,8 @@ args = sys.argv[1:]
 request_id = args.pop().split('=', 1)[1] if args[-1].startswith('--request-id=') else None
 if args[0] == 'list':
 ''' + '\n'.join('    ' + line for line in constants['HELPER'].splitlines()) + '''
+elif args[0] == 'space':
+    pass
 else:
     assert args[0] == 'open', 'No ejection allowed in this test'
     with open(os.environ['USB_TEST_ACTIONS'], 'a') as log: log.write(args[-1] + chr(10))

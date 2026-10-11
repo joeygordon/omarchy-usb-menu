@@ -6,7 +6,10 @@ button too.
 
 The USB icon appears when a USB drive has mounted volumes and disappears when
 there aren't any. The menu follows your Omarchy theme and handles multiple drives
-and partitions. The number in the header counts drives, not partitions.
+and partitions. Each volume has a quiet free-space/capacity line and a thin usage
+bar. Click a drive name to see filesystem types, full mount locations, drive
+capacity, and USB connection speed. The number in the header counts drives,
+not partitions.
 
 Still experimental. Tested on **Omarchy 4.0.4-1** with the Quickshell shell.
 Other versions haven't been checked, and hardware coverage is still limited.
@@ -59,6 +62,9 @@ update the installed copy.
 Click the USB icon to see your mounted volumes. Click outside the menu or press
 Escape to close it.
 
+- **Drive name** expands or collapses details. The small chevron shows the state;
+  you can also focus the name and press Enter or Space. Each drive expands
+  independently, and closing the menu collapses the details.
 - **Open** opens a mounted volume in your file manager. It stays quiet on success
   and shows an error if the launcher fails. It doesn't mount unmounted volumes.
 - **Eject** removes the whole physical drive, including all its partitions. Close
@@ -67,6 +73,19 @@ Escape to close it.
 Wait for the notification naming the drive that's safe to unplug. The menu closes
 before showing it. **A disappearing icon alone doesn't mean removal succeeded.**
 Errors appear in the menu, or in a notification if the menu can't show them.
+
+Space figures are per mounted volume, not the whole drive. Available space is
+what your user can use, excluding reserved space. The bar shows actual used space;
+reserved-but-unused space is not counted as used. Its accessible text gives the
+used amount and percentage. Unknown or invalid usage hides the bar rather than
+showing a misleading empty or full drive. Sizes use decimal units. When
+filesystem figures aren't available, the line says so; a partition size is labeled
+as a partition size. Connection speed is the negotiated USB link rate, not a
+measurement of file-transfer speed.
+
+Secondary text uses the native popup foreground at 75% opacity. It stays subdued
+without using the much darker muted palette color. Sizes and spacing follow
+Omarchy tokens; contrast still depends on your theme.
 
 ## A few limits
 
@@ -117,12 +136,19 @@ omarchy-shell joey.usb-storage diagnostics
 ```
 
 The restart briefly reloads the desktop shell. `ping` should return `ok`, and this
-version's diagnostics should show `native-compact-v11-release-fixes`.
+version's diagnostics should show `native-compact-v16-secondary-contrast`.
 
 **Open seems stuck:** After ten seconds, the plugin reports that it couldn't
 confirm the launch. It doesn't kill your file manager, which may still open.
 Check before trying again. A successful launcher exit also can't guarantee that
 a window is visible.
+
+**Space or connection details unavailable:** Metadata is optional. Free-space
+reads run separately while the menu is open, with a two-second display deadline
+and refreshes every 15 seconds. A slow read can't block discovery or removal
+controls, and no second stats worker starts while the first is still running.
+An unresponsive mount may leave space unavailable until that worker returns.
+Unknown USB speed is shown as unavailable rather than guessed.
 
 **Error details:** These commands only read information. Run the
 second from your project clone or installed plugin directory:
@@ -142,20 +168,31 @@ after copying it back.
 
 ## Development
 
-Run the checks from the project directory on an Omarchy system:
+Run the checks from the project directory on an Omarchy system. The input tests
+need QtTest (on Arch, `qt6-declarative`), and the rendered contrast check needs
+ImageMagick (`magick`). These are test dependencies, not plugin requirements:
 
 ```sh
 /usr/bin/python -m unittest -v
 /usr/bin/python qml_smoke.py
 /usr/bin/python open_smoke.py
 /usr/bin/python target_smoke.py
+/usr/bin/python details_smoke.py
+/usr/bin/python title_smoke.py
+/usr/bin/python spacing_smoke.py
+/usr/bin/python contrast_smoke.py
 omarchy plugin validate .
 ```
 
-There are 35 Python tests and three QML suites. They use fake devices, launchers,
+There are 43 Python tests and seven QML suites. They use fake devices, launchers,
 and notifications; they never open or eject a real volume. Coverage includes
 multiple drives and partitions, busy and partial failures, changed devices,
-malicious labels, repeated clicks, and delayed results. Offscreen tests may warn
+malicious labels, repeated clicks, delayed results, per-volume space, missing
+metadata, empty/full/partial usage, theme colors, long mount paths, repeated
+expansion, keyboard and mouse action isolation, and a slow stats worker. The
+contrast suite renders the current palette plus bundled Nord, Flexoki Light, and
+White palettes; those results are not a guarantee for every custom theme.
+Offscreen tests may warn
 about Wayland focus or window masks. They don't replace hands-on checks of
 hardware, keyboard and mouse behavior, or multi-monitor setups.
 

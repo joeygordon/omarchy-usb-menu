@@ -15,6 +15,28 @@ Ui.BarWidget {
     property int requestSequence: 0
     property int discoveryEpoch: 0
     property bool scanPending: false
+    property var spaceStats: ({})
+    property bool spacePending: false
+    property bool spaceExpired: false
+    property double spaceDeadline: 0
+    function refreshSpace() {
+        // At most one worker, even if a kernel filesystem query never returns.
+        if (!opened || !drives.length || spaceProc.running || spacePending) return
+        spaceStats = ({})
+        spaceExpired = false
+        spacePending = true
+        spaceDeadline = Date.now() + 2000
+        spaceProc.running = true
+    }
+    function acceptSpace(result, now) {
+        if (spaceExpired || now > spaceDeadline || !result.spaceKey) return
+        var known = drives.some(d => d.volumes.some(v => v.spaceKey === result.spaceKey))
+        if (!known || !isFinite(result.totalBytes) || !isFinite(result.availableBytes) || !(result.totalBytes > 0) || !(result.availableBytes >= 0) || result.availableBytes > result.totalBytes) return
+        var next = Object.assign({}, spaceStats)
+        var used = typeof result.usedBytes === "number" && isFinite(result.usedBytes) && result.usedBytes >= 0 && result.usedBytes <= result.totalBytes - result.availableBytes ? result.usedBytes : null
+        next[result.spaceKey] = {totalBytes:result.totalBytes, availableBytes:result.availableBytes, usedBytes:used}
+        spaceStats = next
+    }
     signal notificationRequested(string message)
     onNotificationRequested: message => {
         notify.command = ["notify-send", "USB Storage", notificationText(message)]
@@ -112,8 +134,8 @@ Ui.BarWidget {
         if (drives.length === 0) close()
         if (operation && !targetPresent()) { status = ""; statusError = false }
     }
-    function open() { if (drives.length > 0) opened = true }
-    function close() { opened = false }
+    function open() { if (drives.length > 0) { opened = true; refreshSpace() } }
+    function close() { opened = false; spaceExpired = true; contents.collapseDetails() }
     Shortcut {
         objectName: "usbEscape"
         sequence: "Escape"
@@ -206,6 +228,27 @@ Ui.BarWidget {
             root.refresh()
         }
     }
+    // Space metadata is separate from discovery and action processes. A deadline
+    // only expires UI results; it never kills a file manager or storage operation.
+    Timer {
+        interval: 2000
+        running: root.spacePending || spaceProc.running
+        onTriggered: { root.spaceExpired = true }
+    }
+    Timer { interval: 15000; running: root.opened; repeat: true; onTriggered: root.refreshSpace() }
+    Process {
+        id: spaceProc
+        objectName: "usbSpaceWorker"
+        command: ["/usr/bin/python", root.helper, "space"]
+        onStarted: root.spacePending = false
+        onExited: root.spacePending = false
+        stdout: SplitParser {
+            onRead: data => {
+                try { root.acceptSpace(JSON.parse(data), Date.now()) }
+                catch (e) { console.warn("USB space metadata unavailable") }
+            }
+        }
+    }
     Process { id: notify }
     Ui.BarIconButton {
         id: button
@@ -239,6 +282,7 @@ Ui.BarWidget {
                 id: contents
                 width: scroll.availableWidth
                 drives: root.drives
+                spaceStats: root.spaceStats
                 busy: root.busy
                 ejectingPath: root.operation && root.operation.verb === "eject" && !root.operation.complete ? root.operation.path : ""
                 ejectingToken: root.operation ? root.operation.token : ""

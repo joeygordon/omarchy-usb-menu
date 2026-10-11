@@ -140,6 +140,67 @@ def inspect(objects, path, identity=kernel_identity):
     return token, blocks
 
 
+def volume_space_key(path, obj, drive, identity=kernel_identity):
+    """Correlate stats with one mounted volume, independently of eject eligibility."""
+    try:
+        block = obj[BLOCK]
+        data = [path, block.get('Drive'), block.get('DeviceNumber'), block.get('IdUUID'),
+                block.get('Size'), mounts(obj), drive.get('TimeDetected'), identity(block)]
+        return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
+    except (ValueError, OSError, KeyError):
+        return ''
+
+
+def usb_speed(block, sys_root=Path('/sys/dev/block')):
+    """Read the negotiated link rate from the USB device's existing sysfs data."""
+    try:
+        number = block['DeviceNumber']
+        node = (sys_root / f'{os.major(number)}:{os.minor(number)}').resolve(strict=True)
+        for parent in (node, *node.parents):
+            if (parent / 'idVendor').is_file() and (parent / 'idProduct').is_file():
+                rate = float((parent / 'speed').read_text().strip())
+                return rate if 0 < rate < 10000000 else None
+    except (ValueError, OSError, KeyError):
+        pass
+    return None
+
+
+def collect_space(bus, query=os.statvfs, identity=kernel_identity, report=emit):
+    """Separate process only: statvfs can block on unhealthy storage.
+
+    The UI never waits for this worker and permits only one at a time. Results
+    carry a mount/identity key, rechecked after the read; late UI replies expire.
+    """
+    objects = bus.snapshot()
+    for path, obj in objects.items():
+        drive_path = obj.get(BLOCK, {}).get('Drive')
+        drive = objects.get(drive_path, {}).get(DRIVE, {})
+        locations = mounts(obj)
+        if drive.get('ConnectionBus') != 'usb' or not locations:
+            continue
+        key = volume_space_key(path, obj, drive, identity)
+        if not key:
+            continue
+        try:
+            stats = query(locations[0])
+            total = stats.f_blocks * stats.f_frsize
+            available = stats.f_bavail * stats.f_frsize
+            free_blocks = getattr(stats, 'f_bfree', None)
+            used = (stats.f_blocks - free_blocks) * stats.f_frsize if free_blocks is not None else None
+            if total <= 0 or not 0 <= available <= total:
+                continue
+            if used is not None and not 0 <= used <= total - available:
+                continue
+            current = bus.snapshot()
+            current_obj = current.get(path, {})
+            current_drive = current.get(drive_path, {}).get(DRIVE, {})
+            if volume_space_key(path, current_obj, current_drive, identity) != key:
+                continue
+            report(spaceKey=key, totalBytes=total, availableBytes=available, usedBytes=used)
+        except (OSError, ValueError, KeyError):
+            continue
+
+
 def discover(objects, identity=kernel_identity):
     result = []
     for path, obj in sorted(objects.items()):
@@ -149,7 +210,12 @@ def discover(objects, identity=kernel_identity):
         volumes = []
         for p, o in sorted(objects.items()):
             if o.get(BLOCK, {}).get('Drive') == path and mounts(o):
-                volumes.append({'path': p, 'name': clean(o[BLOCK].get('IdLabel') or o[BLOCK].get('IdUUID') or p.rsplit('/', 1)[-1])})
+                volumes.append({'path': p, 'name': clean(o[BLOCK].get('IdLabel') or o[BLOCK].get('IdUUID') or p.rsplit('/', 1)[-1]),
+                    'filesystem': clean(o[BLOCK].get('IdType') or 'Unknown'),
+                    'mountPaths': [''.join(c if c.isprintable() else '�' for c in location) for location in mounts(o)],
+                    'filesystemBytes': o.get(FS, {}).get('Size', 0),
+                    'partitionBytes': o[BLOCK].get('Size', 0),
+                    'spaceKey': volume_space_key(p, o, d, identity)})
         if not volumes:
             continue
         details = None
@@ -162,7 +228,8 @@ def discover(objects, identity=kernel_identity):
         physical = next((o[BLOCK] for o in objects.values() if o.get(BLOCK, {}).get('Drive') == path and PREFIX + 'Partition' not in o), {})
         raw_device = physical.get('Device', [])
         device = os.fsdecode(bytes(raw_device).rstrip(b'\0')) if raw_device else path.rsplit('/', 1)[-1]
-        result.append({'device': clean(device), 'path': path, 'token': token, 'name': clean(d.get('Model') or 'USB storage'), 'volumes': volumes, 'error': error, 'errorDetails': details})
+        result.append({'device': clean(device), 'path': path, 'token': token, 'name': clean(d.get('Model') or 'USB storage'), 'volumes': volumes, 'error': error, 'errorDetails': details,
+                       'capacityBytes': d.get('Size', 0), 'usbSpeedMbps': usb_speed(physical)})
     for drive in result:
         ambiguous = sum(d['name'] == drive['name'] for d in result) > 1
         drive['displayName'] = ('[' + drive['device'].rsplit('/', 1)[-1] + '] ' if ambiguous else '') + drive['name']
@@ -233,6 +300,8 @@ def main():
         bus = Bus()
         if action == 'list':
             emit(drives=discover(bus.snapshot()))
+        elif action == 'space' and len(args) == 1:
+            collect_space(bus)
         elif action == 'eject' and len(args) == 3:
             with removal_lock():
                 eject(bus, args[1], args[2], progress=lambda message: emit(progress=message))

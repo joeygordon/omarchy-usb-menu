@@ -224,6 +224,88 @@ class LauncherTests(unittest.TestCase):
         spawn.return_value.terminate.assert_not_called()
 
 
+class MetadataTests(unittest.TestCase):
+    def test_volume_and_drive_sizes_remain_distinct(self):
+        o = fixture()
+        o[D][h.DRIVE]['Size'] = 64000000000
+        o[P][h.BLOCK].update(Size=32000000000, IdType='ext4')
+        o[P][h.FS]['Size'] = 31000000000
+        o[Q] = copy.deepcopy(o[P])
+        o[Q][h.BLOCK]['Size'] = 16000000000
+        d = h.discover(o, identity)[0]
+        self.assertEqual(d['capacityBytes'], 64000000000)
+        self.assertEqual(d['volumes'][0]['filesystemBytes'], 31000000000)
+        self.assertEqual(d['volumes'][1]['partitionBytes'], 16000000000)
+        self.assertEqual(d['volumes'][0]['filesystem'], 'ext4')
+        self.assertNotEqual(d['volumes'][0]['spaceKey'], d['volumes'][1]['spaceKey'])
+
+    def test_missing_metadata_is_optional(self):
+        d = h.discover(fixture(), identity)[0]
+        self.assertEqual(d['capacityBytes'], 0)
+        self.assertIsNone(d['usbSpeedMbps'])
+        self.assertEqual(d['volumes'][0]['filesystem'], 'Unknown')
+        self.assertEqual(d['volumes'][0]['filesystemBytes'], 0)
+
+    def test_space_reports_available_not_reserved_free(self):
+        from types import SimpleNamespace
+        reports = []
+        o = fixture(); o[Q] = copy.deepcopy(o[P])
+        h.collect_space(Fake(o), query=lambda p: SimpleNamespace(f_blocks=100, f_frsize=4096, f_bavail=20, f_bfree=30), identity=identity, report=lambda **v: reports.append(v))
+        self.assertEqual(len(reports), 2)
+        self.assertTrue(all(v['totalBytes'] == 409600 and v['availableBytes'] == 81920 and v['usedBytes'] == 286720 for v in reports))
+        self.assertNotEqual(reports[0]['spaceKey'], reports[1]['spaceKey'])
+
+    def test_space_discards_changed_mount(self):
+        from types import SimpleNamespace
+        bus = Fake(fixture()); reports = []
+        def query(path):
+            bus.objects[P][h.FS]['MountPoints'] = [list(b'/mnt/replacement\0')]
+            return SimpleNamespace(f_blocks=10, f_frsize=4096, f_bavail=1)
+        h.collect_space(bus, query=query, identity=identity, report=lambda **v: reports.append(v))
+        self.assertEqual(reports, [])
+        self.assertEqual(bus.calls, [])
+
+    def test_space_failure_and_impossible_counts_are_unavailable(self):
+        from types import SimpleNamespace
+        for value in (OSError('offline'), SimpleNamespace(f_blocks=10, f_frsize=4096, f_bavail=20)):
+            reports = []
+            def query(path):
+                if isinstance(value, Exception): raise value
+                return value
+            h.collect_space(Fake(fixture()), query=query, identity=identity, report=lambda **v: reports.append(v))
+            self.assertEqual(reports, [])
+
+    def test_usage_empty_full_partial_and_invalid(self):
+        from types import SimpleNamespace
+        for free, available, expected in ((100,100,0),(0,0,100),(30,20,70),(-1,0,None),(101,100,None),(10,20,None)):
+            reports = []
+            h.collect_space(Fake(fixture()), query=lambda p: SimpleNamespace(f_blocks=100,f_frsize=1,f_bfree=free,f_bavail=available), identity=identity, report=lambda **v: reports.append(v))
+            if expected is None: self.assertEqual(reports, [])
+            else: self.assertEqual(reports[0]['usedBytes'], expected)
+
+    def test_mount_paths_are_plain_display_data_without_truncation(self):
+        o = fixture()
+        path = '/run/media/testuser/' + '<b>$(not-a-command)</b>' * 20 + '\n'
+        o[P][h.FS]['MountPoints'] = [list(path.encode()+b'\0'), list(b'/mnt/second\0')]
+        volume = h.discover(o, identity)[0]['volumes'][0]
+        self.assertEqual(volume['mountPaths'], [path[:-1]+'�','/mnt/second'])
+        self.assertGreater(len(volume['mountPaths'][0]),160)
+
+    def test_sysfs_negotiated_speed_and_missing_rate(self):
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); usb = root/'devices/usb1/1-2'; block = usb/'host/block/sdz'
+            block.mkdir(parents=True)
+            links = root/'dev'; links.mkdir()
+            (links/'8:0').symlink_to(block)
+            for name, text in [('idVendor','1234'), ('idProduct','5678'), ('speed','5000')]: (usb/name).write_text(text)
+            self.assertEqual(h.usb_speed({'DeviceNumber': os.makedev(8,0)}, links), 5000)
+            (usb/'speed').write_text('unknown')
+            self.assertIsNone(h.usb_speed({'DeviceNumber': os.makedev(8,0)}, links))
+            (usb/'speed').unlink()
+            self.assertIsNone(h.usb_speed({'DeviceNumber': os.makedev(8,0)}, links))
+
+
 class ErrorTests(unittest.TestCase):
     def remote(self, name, text='Technical backend detail'):
         from gi.repository import Gio
