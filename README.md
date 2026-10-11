@@ -11,7 +11,11 @@ bar. Click a drive name to see filesystem types, full mount locations, drive
 capacity, and USB connection speed. The number in the header counts drives,
 not partitions.
 
-Still experimental. Tested on **Omarchy 4.0.4-1** with the Quickshell shell.
+<img src="docs/usb-menu.png" width="320" alt="USB storage menu with two mock volumes, usage bars, and expanded drive details">
+
+*Representative preview with mock drive names, paths, and space figures.*
+
+Still experimental. Tested on **Omarchy 4.0.4** with the Quickshell shell.
 Other versions haven't been checked, and hardware coverage is still limited.
 
 ## Requirements
@@ -41,8 +45,7 @@ code before enabling it.
 
 ## Install
 
-The repository is currently private, so you'll need access to clone it. Run this
-from your normal desktop session:
+Run this from your normal Omarchy desktop session:
 
 ```sh
 omarchy plugin add https://github.com/joeygordon/omarchy-usb-menu.git --enable
