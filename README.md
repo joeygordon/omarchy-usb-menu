@@ -11,9 +11,20 @@ bar. Click a drive name to see filesystem types, full mount locations, drive
 capacity, and USB connection speed. The number in the header counts drives,
 not partitions.
 
-<img src="docs/usb-menu.png" width="320" alt="USB storage menu with two mock volumes, usage bars, and expanded drive details">
+<img src="docs/usb-menu-collapsed.png" width="320" alt="Compact USB storage menu with two mock volumes, usage bars, and collapsed drive details">
 
-*Representative preview with mock drive names, paths, and space figures.*
+*The default compact view, with illustrative mock drive names and space figures.*
+
+<details>
+<summary>See the optional expanded details</summary>
+
+Click a drive name when you want more information.
+
+<img src="docs/usb-menu.png" width="320" alt="The same mock USB drive expanded to show capacity, connection speed, filesystems, and mount locations">
+
+*The drive names, paths, and space figures in both previews are mock data.*
+
+</details>
 
 Still experimental. Tested on **Omarchy 4.0.4** with the Quickshell shell.
 Other versions haven't been checked, and hardware coverage is still limited.
