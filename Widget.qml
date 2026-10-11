@@ -17,8 +17,12 @@ Ui.BarWidget {
     property bool scanPending: false
     signal notificationRequested(string message)
     onNotificationRequested: message => {
-        notify.command = ["notify-send", "USB Storage", message]
+        notify.command = ["notify-send", "USB Storage", notificationText(message)]
         notify.running = true
+    }
+    function notificationText(message) {
+        // Notification bodies are StyledText; labels and errors must remain data.
+        return String(message).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
     }
     function targetPresent() {
         return operation && drives.some(d => d.path === operation.path && d.token === operation.token)

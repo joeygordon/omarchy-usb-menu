@@ -67,6 +67,8 @@ def error_payload(exc, action='eject'):
     elif isinstance(exc, (FileNotFoundError, KeyError)):
         category = 'stale'
     messages = {
+        'open_failed': "Couldn't open this volume. Try opening it from your file manager.",
+        'open_timeout': "The file manager hasn't confirmed the Open request. It may still open; check before trying again.",
         'busy': 'This drive is still in use. Close any files or terminal windows using it, then try ejecting again.',
         'permission': "You don't have permission to manage this drive here. Try the system disk utility.",
         'stale': 'This drive changed or is no longer available. Close this menu and try again.',
@@ -205,6 +207,23 @@ def removal_lock():
         yield
 
 
+def launch_file_manager(uri, timeout=10):
+    """Wait for the launcher, without killing an existing/file-manager process."""
+    try:
+        process = subprocess.Popen(['xdg-open', uri], stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL)
+    except OSError as exc:
+        raise SafetyError('open_failed', f'Could not start xdg-open: {exc}') from exc
+    try:
+        code = process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        # Some handlers stay attached to their window. Bound our wait but do not
+        # terminate a launcher that may have exec'd the actual file manager.
+        raise SafetyError('open_timeout', 'xdg-open did not finish within the launch deadline.') from exc
+    if code != 0:
+        raise SafetyError('open_failed', f'xdg-open exited with status {code}.')
+
+
 def main():
     global REQUEST_ID
     args = sys.argv[1:]
@@ -228,9 +247,8 @@ def main():
             if obj.get(BLOCK, {}).get('Drive') != drive or not mounts(obj):
                 raise SafetyError('stale', 'Volume is no longer mounted.')
             from gi.repository import Gio
-            subprocess.Popen(['xdg-open', Gio.File.new_for_path(mounts(obj)[0]).get_uri()],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            emit(success=True, message='Opened volume in file manager.')
+            launch_file_manager(Gio.File.new_for_path(mounts(obj)[0]).get_uri())
+            emit(success=True, message='File manager accepted the Open request.')
         else:
             raise ValueError('Unknown request.')
     except Exception as exc:

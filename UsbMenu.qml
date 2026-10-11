@@ -4,7 +4,7 @@ import qs.Commons
 
 Column {
     id: menu
-    readonly property string uiRevision: "native-compact-v10-feedback"
+    readonly property string uiRevision: "native-compact-v11-release-fixes"
     property var drives: []
     property bool busy: false
     property string ejectingPath: ""

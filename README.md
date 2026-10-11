@@ -12,7 +12,7 @@ Display name: **USB Storage** · Plugin ID: **`joey.usb-storage`**
 
 ## Requirements
 
-Tested on **Omarchy 4.0.4-1** with its Quickshell shell and official manifest-based
+**Experimental personal plugin.** Tested on **Omarchy 4.0.4-1** with its Quickshell shell and official manifest-based
 bar plugin API. Other versions have not been verified.
 
 The plugin uses existing system components:
@@ -61,7 +61,11 @@ when using `install.py`; editing the project alone does not update the desktop.
 
 - Click the USB icon to open the menu. Escape or an outside click dismisses it.
 - **Open** opens that mounted volume. There is no progress footer or success
-  notification; actual errors remain visible. It does not mount an unmounted drive.
+  notification; launch errors remain visible. The launcher has a ten-second
+  deadline; if it does not finish, an uncertainty message appears. The file
+  manager is not killed and may still open. A successful launcher exit confirms
+  acceptance, not that a particular window is visible. Open does not mount an
+  unmounted drive.
 - **Eject** applies to the entire physical drive, including all its partitions.
   Close files and terminal working directories using the drive first.
 - The target row shows **Ejecting…** while removal and list confirmation are
@@ -107,7 +111,8 @@ omarchy-shell shell ping
 omarchy-shell joey.usb-storage diagnostics
 ```
 
-The initial published version reports `native-compact-v10-feedback`. Diagnostics
+This source revision reports `native-compact-v11-release-fixes`; the initial
+published version reports `native-compact-v10-feedback`. Diagnostics
 are read-only and include the live UI revision, mounted-drive count, popup state,
 and operation/reconciliation state. Restarting the shell briefly reloads desktop
 shell UI; it is not required after each drive operation.
@@ -143,7 +148,8 @@ and use the system disk utility rather than assuming success. No software can
 eliminate hardware failure or every race between validation and an operation.
 Keep backups and wait for the named successful confirmation before unplugging.
 
-Labels are plain text. Open passes a file URI in an argument array; no labels,
+Labels are plain text in the menu and escaped for notification markup. Open
+passes a file URI in an argument array; no labels,
 mount paths, or identifiers are interpolated into shell commands. Errors use
 exact structured D-Bus names, with bounded technical details kept out of normal
 UI. Inspect details when needed:
@@ -170,9 +176,12 @@ Run these from the project directory on an Omarchy system:
 omarchy plugin validate .
 ```
 
-The 27 Python tests cover discovery, multiple devices/partitions, malicious names,
+The 35 Python tests cover discovery, multiple devices/partitions, malicious names,
 identity changes, protected storage, busy/authorization errors, removal ordering,
-request IDs, and error mapping. QML suites use fake helpers and notification
+request IDs, launcher exit/timeout failures, and error mapping. Removal tests
+also verify that another drive remains unchanged, later-partition and power-off
+failures stop safely, and a newly appearing sibling blocks power-off. QML suites
+use fake helpers and notification
 commands to check empty/populated UI, dismissal routing, quiet fast/slow Open,
 duplicate clicks, target-specific feedback, delayed discovery, both result/list
 orderings, stale replies, timeout, and final/nonfinal removal.
@@ -194,3 +203,9 @@ not establish compatibility with every USB device or enclosure.
 
 API references: [Omarchy shell](https://github.com/omacom/omarchy/blob/v4.0.4/shell/README.md)
 and [bar plugins](https://github.com/omacom/omarchy/blob/v4.0.4/shell/plugins/bar/README.md).
+
+## License
+
+[MIT](LICENSE), copyright 2026 Joey Gordon. Omarchy, Quickshell, and other
+system dependencies retain their own licenses. This is an independent plugin,
+not an official Omarchy release.

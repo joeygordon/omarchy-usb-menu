@@ -20,7 +20,11 @@ class Fake:
         self.calls.append((path, method))
         if self.fail: raise RuntimeError(self.fail)
         if method == 'Unmount': self.objects[path][h.FS]['MountPoints'] = []
-        else: self.objects.clear()
+        elif method == 'PowerOff':
+            for p in list(self.objects):
+                if p == path or self.objects[p].get(h.BLOCK, {}).get('Drive') == path:
+                    del self.objects[p]
+        else: raise AssertionError('Unexpected removal method: ' + method)
 
 class Tests(unittest.TestCase):
     def setUp(self): self.o = fixture()
@@ -88,7 +92,9 @@ class Tests(unittest.TestCase):
         path = '/run/media/testuser/$(touch NEVER); space <tag>'
         self.o[P][h.FS]['MountPoints'] = [list(path.encode() + b'\0')]
         with patch.object(h, 'Bus', return_value=Fake(self.o)), patch.object(h.sys, 'argv', ['helper', 'open', D, '', P]), patch.object(h.subprocess, 'Popen') as spawn, patch.object(h, 'emit'):
+            spawn.return_value.wait.return_value = 0
             self.assertEqual(h.main(), 0)
+            spawn.return_value.wait.assert_called_once_with(timeout=10)
             argv = spawn.call_args.args[0]
             self.assertEqual(argv[0], 'xdg-open')
             self.assertTrue(argv[1].startswith('file:///run/media/testuser/'))
@@ -109,11 +115,114 @@ class Tests(unittest.TestCase):
         self.o[Q] = copy.deepcopy(self.o[P])
         self.o[Q][h.BLOCK]['Drive'] = '/drives/b'
         self.assertEqual(len(h.discover(self.o, identity)), 2)
+    def test_eject_preserves_other_drive(self):
+        other, part = '/drives/other', '/blocks/other'
+        self.o[other] = copy.deepcopy(self.o[D])
+        self.o[part] = copy.deepcopy(self.o[P])
+        self.o[part][h.BLOCK]['Drive'] = other
+        before = copy.deepcopy({other: self.o[other], part: self.o[part]})
+        bus = Fake(self.o)
+        h.eject(bus, D, self.token(), identity)
+        self.assertEqual(bus.calls, [(P, 'Unmount'), (D, 'PowerOff')])
+        self.assertEqual(bus.objects, before)
+
+    def test_later_partition_busy_preserves_remaining_mount(self):
+        self.o[Q] = copy.deepcopy(self.o[P])
+        class LaterBusy(Fake):
+            def call(self, path, interface, method):
+                if path == Q:
+                    self.calls.append((path, method))
+                    raise h.SafetyError('busy', 'Later partition busy')
+                super().call(path, interface, method)
+        bus = LaterBusy(self.o)
+        with self.assertRaises(h.SafetyError): h.eject(bus, D, self.token(), identity)
+        self.assertEqual(bus.calls, [(P, 'Unmount'), (Q, 'Unmount')])
+        self.assertEqual(h.mounts(bus.objects[P]), [])
+        self.assertTrue(h.mounts(bus.objects[Q]))
+        self.assertIn(D, bus.objects)
+
+    def test_poweroff_failure_leaves_drive_present_unmounted(self):
+        class PowerFailure(Fake):
+            def call(self, path, interface, method):
+                if method == 'PowerOff':
+                    self.calls.append((path, method))
+                    raise RuntimeError('Power-off failed')
+                super().call(path, interface, method)
+        bus = PowerFailure(self.o)
+        with self.assertRaises(RuntimeError): h.eject(bus, D, self.token(), identity)
+        self.assertEqual(bus.calls, [(P, 'Unmount'), (D, 'PowerOff')])
+        self.assertIn(D, bus.objects)
+        self.assertEqual(h.mounts(bus.objects[P]), [])
+
+    def test_sibling_appearing_between_operations_blocks_poweroff(self):
+        self.o[D][h.DRIVE]['SiblingId'] = 'enclosure'
+        class NewSibling(Fake):
+            def call(self, *args):
+                super().call(*args)
+                self.objects['/drives/sibling'] = {h.DRIVE: {'SiblingId': 'enclosure'}}
+        bus = NewSibling(self.o)
+        with self.assertRaises(h.SafetyError) as error:
+            h.eject(bus, D, self.token(), identity)
+        self.assertEqual(error.exception.category, 'shared')
+        self.assertEqual(bus.calls, [(P, 'Unmount')])
+        self.assertIn(D, bus.objects)
+
     def test_repeated_click_lock(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, XDG_RUNTIME_DIR=tmp):
             with h.removal_lock():
                 with self.assertRaises(ValueError):
                     with h.removal_lock(): pass
+
+class LauncherTests(unittest.TestCase):
+    def request(self, spawn):
+        from io import StringIO
+        import contextlib, json
+        output = StringIO()
+        with patch.object(h, 'Bus', return_value=Fake(fixture())), patch.object(h.sys, 'argv', ['helper', 'open', D, '', P]), patch.object(h.subprocess, 'Popen', spawn), contextlib.redirect_stdout(output):
+            code = h.main()
+        return code, json.loads(output.getvalue())
+
+    def test_launcher_success_waits_for_exit(self):
+        from unittest.mock import Mock
+        spawn = Mock()
+        spawn.return_value.wait.return_value = 0
+        code, report = self.request(spawn)
+        spawn.return_value.wait.assert_called_once_with(timeout=10)
+        self.assertEqual(code, 0)
+        self.assertTrue(report['success'])
+
+    def test_launcher_nonzero_exit_is_error(self):
+        from unittest.mock import Mock
+        for status in (1, 3, 4, -15):
+            spawn = Mock()
+            spawn.return_value.wait.return_value = status
+            code, report = self.request(spawn)
+            self.assertEqual(code, 1)
+            self.assertEqual(report['errorCode'], 'open_failed')
+            self.assertNotIn('success', report)
+            self.assertIn(str(status), report['details']['message'])
+
+    def test_launcher_spawn_failure_is_open_error(self):
+        from unittest.mock import Mock
+        for error in (FileNotFoundError('xdg-open missing'), PermissionError('denied')):
+            code, report = self.request(Mock(side_effect=error))
+            self.assertEqual(code, 1)
+            self.assertEqual(report['errorCode'], 'open_failed')
+            self.assertNotIn('success', report)
+
+    def test_launcher_timeout_is_bounded_without_killing_file_manager(self):
+        from unittest.mock import Mock
+        spawn = Mock()
+        spawn.return_value.wait.side_effect = h.subprocess.TimeoutExpired('xdg-open', 10)
+        code, report = self.request(spawn)
+        self.assertEqual(code, 1)
+        self.assertEqual(report['errorCode'], 'open_timeout')
+        self.assertIn('may still open', report['error'])
+        self.assertNotIn('success', report)
+        spawn.return_value.wait.assert_called_once_with(timeout=10)
+        spawn.return_value.kill.assert_not_called()
+        spawn.return_value.terminate.assert_not_called()
+
 
 class ErrorTests(unittest.TestCase):
     def remote(self, name, text='Technical backend detail'):

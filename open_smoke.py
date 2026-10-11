@@ -105,5 +105,5 @@ with tempfile.TemporaryDirectory(prefix='usb-open-') as tmp:
     assert 'WARN scene:' not in output
     print('Recorded mocked actions:', repr((root/'actions').read_text()))
     assert (root/'actions').read_text().splitlines() == ['fast','slow','error'], 'Duplicate Open was not blocked'
-    assert (root/'notices').read_text().splitlines() == ['Mock USB — <b>$(touch NEVER)</b>: Mock Open failed'], 'Unexpected success notification'
+    assert (root/'notices').read_text().splitlines() == ['Mock USB — &lt;b&gt;$(touch NEVER)&lt;/b&gt;: Mock Open failed'], 'Unexpected success notification'
     print('USB_OPEN_DUPLICATE_AND_NOTIFICATION_PASS')
