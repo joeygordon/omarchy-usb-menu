@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "joey.usb-storage",
+  "name": "USB Storage",
+  "version": "0.1.0",
+  "author": "Joey",
+  "description": "Mounted USB volumes with conservative whole-drive safe removal",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Widget.qml"
+  },
+  "barWidget": {
+    "displayName": "USB Storage",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {},
+    "schema": []
+  }
+}
